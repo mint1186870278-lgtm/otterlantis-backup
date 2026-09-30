@@ -1,0 +1,655 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>水獭星球 · 数据看板</title>
+<!--
+  水獭星球 · 埋点数据展示后台（单文件，零构建）
+  ─────────────────────────────────────────────
+  用法：直接双击本文件用浏览器打开即可（后端已开 CORS，可跨域直连）。
+        也可以扔到服务器任意位置当静态页访问。
+
+  配置：下方 API_BASE 是后端地址。若后端换了地址/端口，只改这一行。
+        若以后想让本页和后端同源部署、走相对路径，把 API_BASE 改成空字符串 '' 即可。
+
+  图表：用 CDN 引入 Chart.js。若部署环境没有外网（CDN 拉不到），
+        图表会自动降级成纯 CSS 柱状图，数据照样能看，不影响使用。
+
+  访问控制：当前无密码。若以后要加，建议在后端给这些接口加 basic auth 或 token，
+            前端这层加密码只是防君子不防小人。
+-->
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<style>
+  :root {
+    --orange: #ff9100;
+    --orange-dark: #cc7400;
+    --bg: #f6f7fb;
+    --card: #ffffff;
+    --text: #2b2b3a;
+    --muted: #8a8a9a;
+    --border: #e7e8ef;
+    --blue: #4a90d9;
+    --green: #34c759;
+    --shadow: 0 2px 8px rgba(0,0,0,0.06);
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    font-size: 14px;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 1280px; margin: 0 auto; padding: 20px 24px 60px; }
+
+  /* 顶部栏 */
+  .topbar {
+    display: flex; align-items: center; gap: 16px;
+    padding: 16px 0 20px; flex-wrap: wrap;
+  }
+  .topbar h1 { font-size: 22px; margin: 0; font-weight: 700; }
+  .topbar .sub { color: var(--muted); font-size: 13px; }
+  .topbar .spacer { flex: 1; }
+  .btn {
+    background: var(--orange); color: #fff; border: none;
+    padding: 8px 18px; border-radius: 10px; font-size: 14px; font-weight: 600;
+    cursor: pointer; box-shadow: 0 3px 0 var(--orange-dark); transition: all .12s;
+  }
+  .btn:hover { background: #ffa733; }
+  .btn:active { transform: translateY(2px); box-shadow: 0 1px 0 var(--orange-dark); }
+  .btn.busy { opacity: .6; pointer-events: none; }
+
+  /* 区块标题 */
+  .section-title { font-size: 16px; font-weight: 700; margin: 28px 0 14px; }
+
+  /* 卡片区 */
+  .cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }
+  @media (max-width: 960px) { .cards { grid-template-columns: repeat(2, 1fr); } }
+  .card {
+    background: var(--card); border-radius: 14px; padding: 16px 18px;
+    box-shadow: var(--shadow); border: 1px solid var(--border);
+  }
+  .card .label { color: var(--muted); font-size: 13px; margin-bottom: 8px; display: flex; align-items: center; gap: 6px; }
+  .card .value { font-size: 28px; font-weight: 800; line-height: 1.1; }
+  .card .value .unit { font-size: 14px; font-weight: 600; color: var(--muted); margin-left: 3px; }
+  .card .sub { color: var(--muted); font-size: 12px; margin-top: 6px; }
+  .card.hl { background: linear-gradient(135deg, #fff7ec, #ffffff); border-color: #ffe0b8; }
+  .card.hl .value { color: var(--orange-dark); }
+  .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+
+  /* 图表区 */
+  .charts { display: grid; grid-template-columns: 1.6fr 1fr; gap: 16px; }
+  @media (max-width: 960px) { .charts { grid-template-columns: 1fr; } }
+  .panel {
+    background: var(--card); border-radius: 14px; padding: 18px;
+    box-shadow: var(--shadow); border: 1px solid var(--border);
+  }
+  .panel h3 { margin: 0 0 14px; font-size: 15px; }
+  .chart-box { position: relative; height: 280px; }
+
+  /* CSS 降级柱状图 */
+  .css-bars { display: flex; flex-direction: column; gap: 10px; }
+  .css-bar-row { display: grid; grid-template-columns: 90px 1fr 48px; align-items: center; gap: 10px; }
+  .css-bar-row .nm { font-size: 13px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .css-bar-track { background: #eef0f6; border-radius: 6px; height: 18px; overflow: hidden; }
+  .css-bar-fill { background: var(--orange); height: 100%; border-radius: 6px; transition: width .4s; }
+  .css-bar-row .ct { text-align: right; font-size: 13px; font-weight: 600; color: var(--muted); }
+
+  /* 表格区 */
+  .toolbar { display: flex; gap: 10px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; }
+  .toolbar input, .toolbar select {
+    padding: 7px 10px; border: 1px solid var(--border); border-radius: 8px;
+    font-size: 13px; background: #fff; color: var(--text); outline: none;
+  }
+  .toolbar input:focus, .toolbar select:focus { border-color: var(--orange); }
+  .toolbar .lbl { color: var(--muted); font-size: 13px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--border); }
+  th { color: var(--muted); font-weight: 600; background: #fafbfd; position: sticky; top: 0; }
+  td { vertical-align: top; }
+  tr:hover td { background: #fafbfd; }
+  .tbl-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 12px; background: #fff; }
+  .mono { font-family: ui-monospace, "SF Mono", Consolas, monospace; font-size: 12px; color: var(--muted); }
+  .tag {
+    display: inline-block; padding: 2px 8px; border-radius: 6px; font-size: 12px; font-weight: 600;
+    background: #eef2fb; color: var(--blue);
+  }
+  .tag.zh { background: #fdeee0; color: var(--orange-dark); }
+  .tag.en { background: #e6f6ec; color: #1d9b50; }
+  .link { color: var(--blue); cursor: pointer; text-decoration: underline; font-size: 12px; }
+  .pager { display: flex; align-items: center; gap: 10px; margin-top: 12px; justify-content: flex-end; }
+  .pager button {
+    border: 1px solid var(--border); background: #fff; border-radius: 8px;
+    padding: 6px 12px; cursor: pointer; font-size: 13px; color: var(--text);
+  }
+  .pager button:disabled { opacity: .4; cursor: default; }
+  .pager .info { color: var(--muted); font-size: 13px; }
+
+  /* 错误条 */
+  .err { color: #c0392b; font-size: 13px; padding: 8px 0; }
+  .loading { color: var(--muted); font-size: 13px; padding: 16px; text-align: center; }
+
+  /* 弹窗 */
+  .modal-mask {
+    position: fixed; inset: 0; background: rgba(0,0,0,.4); display: none;
+    align-items: center; justify-content: center; z-index: 50;
+  }
+  .modal-mask.open { display: flex; }
+  .modal {
+    background: #fff; border-radius: 14px; padding: 20px; max-width: 560px; width: 90%;
+    max-height: 70vh; overflow: auto; box-shadow: 0 12px 40px rgba(0,0,0,.2);
+  }
+  .modal h4 { margin: 0 0 12px; }
+  .modal pre {
+    background: #f6f7fb; padding: 14px; border-radius: 10px; overflow: auto;
+    font-size: 12px; line-height: 1.5; margin: 0;
+  }
+  .modal .close { margin-top: 14px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <!-- 顶部栏 -->
+  <div class="topbar">
+    <h1>🦦 水獭星球 · 数据看板</h1>
+    <span class="sub" id="loadTime"></span>
+    <span class="spacer"></span>
+    <button class="btn" id="refreshBtn" onclick="refreshAll()">↻ 刷新</button>
+  </div>
+  <div class="err" id="globalErr" style="display:none"></div>
+
+  <!-- ① 核心指标卡片 -->
+  <div class="cards" id="cards">
+    <div class="loading">加载中…</div>
+  </div>
+
+  <!-- ② 事件分布图表 -->
+  <div class="section-title">📊 事件分布</div>
+  <div class="charts">
+    <div class="panel">
+      <h3>埋点事件次数分布</h3>
+      <div class="chart-box" id="eventChartBox"><div class="loading">加载中…</div></div>
+    </div>
+    <div class="panel">
+      <h3>留资语言分布</h3>
+      <div class="chart-box" id="langChartBox"><div class="loading">加载中…</div></div>
+    </div>
+  </div>
+
+  <!-- ③ 埋点明细表格 -->
+  <div class="section-title">📋 埋点明细</div>
+  <div class="toolbar">
+    <span class="lbl">事件</span>
+    <select id="evFilter" onchange="onEvFilterChange()">
+      <option value="">全部</option>
+    </select>
+    <span class="lbl">会话ID</span>
+    <input id="evSession" placeholder="按 sessionId 精确筛选" size="22" />
+    <button class="btn" style="padding:7px 14px;box-shadow:0 2px 0 var(--orange-dark)" onclick="applyEvFilter()">筛选</button>
+  </div>
+  <div class="tbl-wrap">
+    <table>
+      <thead><tr><th>ID</th><th>会话ID</th><th>事件</th><th>详情</th><th>时间</th></tr></thead>
+      <tbody id="evBody"><tr><td colspan="5" class="loading">加载中…</td></tr></tbody>
+    </table>
+  </div>
+  <div class="pager" id="evPager"></div>
+
+  <!-- ④ 留资名单表格 -->
+  <div class="section-title">📮 留资名单</div>
+  <div class="toolbar">
+    <span class="lbl">语言</span>
+    <select id="subLang" onchange="applySubFilter()">
+      <option value="">全部</option>
+      <option value="zh">中文(微信)</option>
+      <option value="en">英文(邮箱)</option>
+    </select>
+    <span class="lbl">搜索</span>
+    <input id="subKeyword" placeholder="搜邮箱 / 微信号" size="22" oninput="onSubKeywordInput()" />
+  </div>
+  <div class="tbl-wrap">
+    <table>
+      <thead><tr><th>ID</th><th>语言</th><th>邮箱</th><th>微信号</th><th>来源</th><th>时间</th></tr></thead>
+      <tbody id="subBody"><tr><td colspan="6" class="loading">加载中…</td></tr></tbody>
+    </table>
+  </div>
+  <div class="pager" id="subPager"></div>
+
+</div>
+
+<!-- payload 详情弹窗 -->
+<div class="modal-mask" id="modalMask" onclick="closeModal(event)">
+  <div class="modal" onclick="event.stopPropagation()">
+    <h4>事件详情 (payload)</h4>
+    <pre id="modalContent"></pre>
+    <button class="btn close" onclick="closeModal()">关闭</button>
+  </div>
+</div>
+
+<script>
+// ═══════════════════════ 配置区 ═══════════════════════
+const API_BASE = 'https://api.otterlantis.com';  // 后端地址（HTTPS 域名）；同源部署时改为 ''
+const PAGE_SIZE = 20;
+const MAX_PAGES = 50;                          // 全量拉取安全阀，防异常死循环
+
+// 事件名 → 中文标签
+const EVENT_LABELS = {
+  game_start:          '游戏开始',
+  section_duration:    '页面停留',
+  stage_complete:      '关卡完成',
+  voice_start:         '语音开始',
+  voice_end:           '语音结束',
+  retention_form_open: '点击想看后续',
+  retention_submit:    '留资提交',
+  retention_skip:      '跳过留资',
+};
+// section / stage / scene 子标签（用于 payload 友好展示）
+const SUB_LABELS = {
+  main:'主页', storybook:'故事书', intro:'开场', parkour:'跑酷', story:'讲故事', gallery:'相册', egg:'水獭蛋',
+  npc1:'啄木鸟', npc2:'基维鸟', npc3:'叽里咕噜', fakeMoon:'假月亮',
+};
+const labelEv  = e => EVENT_LABELS[e] || e;
+const labelSub = s => SUB_LABELS[s] || s;
+
+// ═══════════════════════ 工具层 ═══════════════════════
+async function getJSON(path) {
+  const res = await fetch(API_BASE + path, { headers: { 'Accept': 'application/json' } });
+  if (!res.ok) throw new Error('HTTP ' + res.status);
+  return res.json();
+}
+function fmtDuration(ms) {
+  if (ms == null || isNaN(ms)) return '—';
+  const s = Math.round(ms / 1000);
+  if (s < 60) return s + ' 秒';
+  const m = Math.floor(s / 60), rs = s % 60;
+  if (m < 60) return m + ' 分' + (rs ? ' ' + rs + ' 秒' : '');
+  const h = Math.floor(m / 60), rm = m % 60;
+  return h + ' 时' + (rm ? ' ' + rm + ' 分' : '');
+}
+function fmtTs(ts) {
+  if (!ts) return '—';
+  const d = new Date(Number(ts));
+  if (isNaN(d.getTime())) return String(ts);
+  const p = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+function hasChart() { return typeof window.Chart !== 'undefined'; }
+function esc(s) {
+  return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+function showGlobalErr(msg) {
+  const el = document.getElementById('globalErr');
+  el.textContent = '⚠ ' + msg;
+  el.style.display = 'block';
+}
+
+// ═══════════════════════ 数据层 ═══════════════════════
+let trackStats = null, eggStats = null;
+let chartRefs = { event: null, lang: null };
+
+async function loadTrackStats() { trackStats = await getJSON('/api/track/stats'); }
+async function loadEggStats()   { eggStats   = await getJSON('/api/otter-egg/stats'); }
+
+// 按事件类型循环翻页拉全量（仅用于需要 payload 的聚合计算）
+async function fetchAllEvents(eventName) {
+  let page = 1, all = [], total = Infinity, approx = false;
+  while (all.length < total && page <= MAX_PAGES) {
+    const r = await getJSON(`/api/track/events?event=${encodeURIComponent(eventName)}&page=${page}&pageSize=100`);
+    total = r.total;
+    if (!r.items || r.items.length === 0) break;
+    all.push(...r.items);
+    page++;
+  }
+  if (all.length < total) approx = true;  // 超过 MAX_PAGES 上限，标近似
+  return { items: all, approx };
+}
+
+// 聚合计算：语音总时长、总/人均使用时长、形成作品次数
+async function computeAggregates() {
+  const [voice, section, stages] = await Promise.all([
+    fetchAllEvents('voice_end'),
+    fetchAllEvents('section_duration'),
+    fetchAllEvents('stage_complete'),
+  ]);
+
+  // 语音总时长
+  let voiceMs = 0;
+  for (const it of voice.items) voiceMs += Number(it.payload?.durationMs) || 0;
+
+  // 使用时长：按 sessionId 聚合
+  const bySession = {};
+  for (const it of section.items) {
+    const sid = it.sessionId || '_';
+    bySession[sid] = (bySession[sid] || 0) + (Number(it.payload?.durationMs) || 0);
+  }
+  const sessionIds = Object.keys(bySession);
+  let totalUseMs = 0;
+  for (const sid of sessionIds) totalUseMs += bySession[sid];
+  const avgUseMs = sessionIds.length ? totalUseMs / sessionIds.length : 0;
+
+  // 形成作品次数 = stage_complete 中 stage==='story'
+  let storyCount = 0;
+  for (const it of stages.items) if (it.payload?.stage === 'story') storyCount++;
+
+  const approx = voice.approx || section.approx || stages.approx;
+  return { voiceMs, totalUseMs, avgUseMs, storyCount, approx };
+}
+
+// ═══════════════════════ 渲染层 ═══════════════════════
+function getEventCount(ev) {
+  if (!trackStats?.byEvent) return 0;
+  const hit = trackStats.byEvent.find(x => x.event === ev);
+  return hit ? hit.count : 0;
+}
+
+function renderCards() {
+  const wrap = document.getElementById('cards');
+  const playCount   = getEventCount('game_start');
+  const followClick = getEventCount('retention_form_open');
+  const voiceCount  = getEventCount('voice_start');
+  const submitCount = getEventCount('retention_submit');
+  const sessions    = trackStats?.sessions ?? 0;
+  const eggTotal    = eggStats?.total ?? 0;
+
+  // 聚合卡先占位「计算中」，computeAggregates 完成后回填
+  wrap.innerHTML = `
+    <div class="card hl">
+      <div class="label"><span class="dot" style="background:var(--orange)"></span>点击「想看后续」</div>
+      <div class="value">${followClick}<span class="unit">次</span></div>
+      <div class="sub">留存页关注 · 核心指标</div>
+    </div>
+    <div class="card hl">
+      <div class="label"><span class="dot" style="background:var(--orange)"></span>语音交互次数</div>
+      <div class="value">${voiceCount}<span class="unit">次</span></div>
+      <div class="sub" id="cardVoiceDur">语音总时长 计算中…</div>
+    </div>
+    <div class="card hl">
+      <div class="label"><span class="dot" style="background:var(--orange)"></span>形成作品次数</div>
+      <div class="value" id="cardStory">…</div>
+      <div class="sub">走完讲故事环节</div>
+    </div>
+    <div class="card hl">
+      <div class="label"><span class="dot" style="background:var(--orange)"></span>人均使用时长</div>
+      <div class="value" id="cardAvgUse">…</div>
+      <div class="sub" id="cardTotalUse">总使用时长 计算中…</div>
+    </div>
+    <div class="card">
+      <div class="label"><span class="dot" style="background:var(--blue)"></span>总游玩次数</div>
+      <div class="value">${playCount}<span class="unit">次</span></div>
+      <div class="sub">game_start</div>
+    </div>
+    <div class="card">
+      <div class="label"><span class="dot" style="background:var(--blue)"></span>总会话数</div>
+      <div class="value">${sessions}<span class="unit">个</span></div>
+      <div class="sub">去重 sessionId</div>
+    </div>
+    <div class="card">
+      <div class="label"><span class="dot" style="background:var(--green)"></span>留资总数</div>
+      <div class="value">${eggTotal}<span class="unit">条</span></div>
+      <div class="sub">提交联系方式</div>
+    </div>
+    <div class="card">
+      <div class="label"><span class="dot" style="background:var(--green)"></span>留资提交动作</div>
+      <div class="value">${submitCount}<span class="unit">次</span></div>
+      <div class="sub">retention_submit</div>
+    </div>
+  `;
+}
+
+function fillAggregateCards(agg) {
+  const mark = agg.approx ? '≈ ' : '';
+  const dv = document.getElementById('cardVoiceDur');
+  if (dv) dv.textContent = '语音总时长 ' + mark + fmtDuration(agg.voiceMs);
+  const st = document.getElementById('cardStory');
+  if (st) st.innerHTML = mark + agg.storyCount + '<span class="unit">次</span>';
+  const av = document.getElementById('cardAvgUse');
+  if (av) av.innerHTML = mark + fmtDuration(agg.avgUseMs);
+  const tu = document.getElementById('cardTotalUse');
+  if (tu) tu.textContent = '总使用时长 ' + mark + fmtDuration(agg.totalUseMs);
+}
+
+function renderCharts() {
+  // 销毁旧图表实例，避免刷新时叠加
+  if (chartRefs.event) { chartRefs.event.destroy(); chartRefs.event = null; }
+  if (chartRefs.lang)  { chartRefs.lang.destroy();  chartRefs.lang = null; }
+
+  const evData = (trackStats?.byEvent || [])
+    .filter(x => x.event !== 'health_probe' && x.event !== 'test_event' && x.event !== 'key_update_probe')
+    .slice().sort((a, b) => b.count - a.count);
+  const langData = eggStats?.byLang || [];
+
+  renderEventChart(evData);
+  renderLangChart(langData);
+}
+
+function renderEventChart(evData) {
+  const box = document.getElementById('eventChartBox');
+  if (!evData.length) { box.innerHTML = '<div class="loading">暂无数据</div>'; return; }
+
+  if (hasChart()) {
+    box.innerHTML = '<canvas></canvas>';
+    const ctx = box.querySelector('canvas');
+    chartRefs.event = new Chart(ctx, {
+      type: 'bar',
+      data: {
+        labels: evData.map(x => labelEv(x.event)),
+        datasets: [{ label: '次数', data: evData.map(x => x.count), backgroundColor: '#ff9100', borderRadius: 6 }],
+      },
+      options: {
+        indexAxis: 'y', responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { display: false } },
+        scales: { x: { beginAtZero: true, ticks: { precision: 0 } } },
+      },
+    });
+  } else {
+    box.innerHTML = cssBars(evData.map(x => ({ name: labelEv(x.event), count: x.count })));
+  }
+}
+
+function renderLangChart(langData) {
+  const box = document.getElementById('langChartBox');
+  if (!langData.length) { box.innerHTML = '<div class="loading">暂无数据</div>'; return; }
+  const nameOf = l => l === 'zh' ? '中文' : l === 'en' ? '英文' : l;
+
+  if (hasChart()) {
+    box.innerHTML = '<canvas></canvas>';
+    const ctx = box.querySelector('canvas');
+    chartRefs.lang = new Chart(ctx, {
+      type: 'doughnut',
+      data: {
+        labels: langData.map(x => nameOf(x.lang)),
+        datasets: [{ data: langData.map(x => x.count), backgroundColor: ['#ff9100', '#4a90d9', '#34c759', '#bbb'] }],
+      },
+      options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'bottom' } } },
+    });
+  } else {
+    box.innerHTML = cssBars(langData.map(x => ({ name: nameOf(x.lang), count: x.count })));
+  }
+}
+
+// 纯 CSS 柱状图（Chart.js 不可达时降级）
+function cssBars(rows) {
+  const max = Math.max(1, ...rows.map(r => r.count));
+  return '<div class="css-bars">' + rows.map(r => `
+    <div class="css-bar-row">
+      <span class="nm" title="${esc(r.name)}">${esc(r.name)}</span>
+      <span class="css-bar-track"><span class="css-bar-fill" style="width:${(r.count / max * 100).toFixed(1)}%"></span></span>
+      <span class="ct">${r.count}</span>
+    </div>`).join('') + '</div>';
+}
+
+// ── 埋点明细表格 ──
+let evState = { page: 1, event: '', sessionId: '' };
+
+function fillEventFilterOptions() {
+  const sel = document.getElementById('evFilter');
+  if (sel.options.length > 1) return; // 已填充
+  const evs = (trackStats?.byEvent || []).map(x => x.event);
+  for (const ev of evs) {
+    const o = document.createElement('option');
+    o.value = ev; o.textContent = labelEv(ev) + ' (' + ev + ')';
+    sel.appendChild(o);
+  }
+}
+
+async function loadEvents() {
+  const body = document.getElementById('evBody');
+  body.innerHTML = '<tr><td colspan="5" class="loading">加载中…</td></tr>';
+  try {
+    let q = `/api/track/events?page=${evState.page}&pageSize=${PAGE_SIZE}`;
+    if (evState.event)     q += '&event=' + encodeURIComponent(evState.event);
+    if (evState.sessionId) q += '&sessionId=' + encodeURIComponent(evState.sessionId);
+    const r = await getJSON(q);
+    if (!r.items.length) { body.innerHTML = '<tr><td colspan="5" class="loading">无数据</td></tr>'; }
+    else {
+      body.innerHTML = r.items.map(it => {
+        const pj = JSON.stringify(it.payload || {});
+        const summary = payloadSummary(it.event, it.payload);
+        return `<tr>
+          <td class="mono">${it.id}</td>
+          <td class="mono">${esc(it.sessionId)}</td>
+          <td><span class="tag">${esc(labelEv(it.event))}</span></td>
+          <td>${summary}${pj !== '{}' ? ` <span class="link" onclick='showPayload(${JSON.stringify(pj)})'>详情</span>` : ''}</td>
+          <td class="mono">${fmtTs(it.ts)}</td>
+        </tr>`;
+      }).join('');
+    }
+    renderPager('evPager', r.total, evState.page, p => { evState.page = p; loadEvents(); });
+  } catch (e) {
+    body.innerHTML = `<tr><td colspan="5" class="err">加载失败：${esc(e.message)}</td></tr>`;
+  }
+}
+
+// payload 友好摘要（一眼能看的关键字段）
+function payloadSummary(ev, p) {
+  if (!p) return '';
+  if (ev === 'section_duration') return `${labelSub(p.section)} · ${fmtDuration(p.durationMs)}`;
+  if (ev === 'voice_end')        return `${labelSub(p.scene)} · ${fmtDuration(p.durationMs)}`;
+  if (ev === 'voice_start')      return labelSub(p.scene);
+  if (ev === 'stage_complete')   return labelSub(p.stage);
+  if (ev === 'retention_form_open') return p.lang === 'zh' ? '中文' : p.lang === 'en' ? '英文' : (p.lang || '');
+  if (ev === 'retention_submit') return `${p.lang === 'zh' ? '微信' : '邮箱'}`;
+  return '';
+}
+
+function onEvFilterChange() {}  // 选择后等点「筛选」按钮统一应用
+function applyEvFilter() {
+  evState.event = document.getElementById('evFilter').value;
+  evState.sessionId = document.getElementById('evSession').value.trim();
+  evState.page = 1;
+  loadEvents();
+}
+
+// ── 留资名单表格 ──
+let subState = { page: 1, lang: '', keyword: '' };
+let subKeywordTimer = null;
+
+async function loadSubmissions() {
+  const body = document.getElementById('subBody');
+  body.innerHTML = '<tr><td colspan="6" class="loading">加载中…</td></tr>';
+  try {
+    let q = `/api/otter-egg/submissions?page=${subState.page}&pageSize=${PAGE_SIZE}`;
+    if (subState.lang)    q += '&lang=' + encodeURIComponent(subState.lang);
+    if (subState.keyword) q += '&keyword=' + encodeURIComponent(subState.keyword);
+    const r = await getJSON(q);
+    if (!r.items.length) { body.innerHTML = '<tr><td colspan="6" class="loading">无数据</td></tr>'; }
+    else {
+      body.innerHTML = r.items.map(it => `<tr>
+        <td class="mono">${it.id}</td>
+        <td><span class="tag ${it.lang === 'zh' ? 'zh' : 'en'}">${it.lang === 'zh' ? '中文' : it.lang === 'en' ? '英文' : esc(it.lang)}</span></td>
+        <td>${esc(it.email) || '<span class="mono">—</span>'}</td>
+        <td>${esc(it.wechat) || '<span class="mono">—</span>'}</td>
+        <td class="mono">${esc(it.source)}</td>
+        <td class="mono">${fmtTs(it.ts)}</td>
+      </tr>`).join('');
+    }
+    renderPager('subPager', r.total, subState.page, p => { subState.page = p; loadSubmissions(); });
+  } catch (e) {
+    body.innerHTML = `<tr><td colspan="6" class="err">加载失败：${esc(e.message)}</td></tr>`;
+  }
+}
+
+function applySubFilter() {
+  subState.lang = document.getElementById('subLang').value;
+  subState.page = 1;
+  loadSubmissions();
+}
+function onSubKeywordInput() {
+  clearTimeout(subKeywordTimer);
+  subKeywordTimer = setTimeout(() => {
+    subState.keyword = document.getElementById('subKeyword').value.trim();
+    subState.page = 1;
+    loadSubmissions();
+  }, 300);
+}
+
+// ── 通用翻页器 ──
+function renderPager(elId, total, page, onGo) {
+  const el = document.getElementById(elId);
+  const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  el.innerHTML = '';
+  const prev = document.createElement('button');
+  prev.textContent = '‹ 上一页'; prev.disabled = page <= 1;
+  prev.onclick = () => onGo(page - 1);
+  const next = document.createElement('button');
+  next.textContent = '下一页 ›'; next.disabled = page >= pages;
+  next.onclick = () => onGo(page + 1);
+  const info = document.createElement('span');
+  info.className = 'info';
+  info.textContent = `第 ${page} / ${pages} 页 · 共 ${total} 条`;
+  el.append(info, prev, next);
+}
+
+// ── payload 弹窗 ──
+function showPayload(jsonStr) {
+  let pretty = jsonStr;
+  try { pretty = JSON.stringify(JSON.parse(jsonStr), null, 2); } catch (e) {}
+  document.getElementById('modalContent').textContent = pretty;
+  document.getElementById('modalMask').classList.add('open');
+}
+function closeModal(e) {
+  if (e && e.target.id !== 'modalMask' && !e.target.classList.contains('close')) return;
+  document.getElementById('modalMask').classList.remove('open');
+}
+
+// ═══════════════════════ 初始化 ═══════════════════════
+async function refreshAll() {
+  const btn = document.getElementById('refreshBtn');
+  btn.classList.add('busy');
+  document.getElementById('globalErr').style.display = 'none';
+
+  // 先并行拉两个 stats，秒出卡片 + 图表 + 两表首页
+  try {
+    await Promise.all([loadTrackStats(), loadEggStats()]);
+    renderCards();
+    renderCharts();
+    fillEventFilterOptions();
+  } catch (e) {
+    showGlobalErr('概览数据加载失败：' + e.message + '（请确认后端 ' + API_BASE + ' 可访问）');
+  }
+
+  // 明细两表独立加载（用各自当前筛选状态）
+  loadEvents();
+  loadSubmissions();
+
+  // 后台拉全量算聚合，回填三张聚合卡（不阻塞首屏）
+  try {
+    const agg = await computeAggregates();
+    fillAggregateCards(agg);
+  } catch (e) {
+    const dv = document.getElementById('cardVoiceDur');
+    if (dv) dv.textContent = '聚合计算失败';
+  }
+
+  document.getElementById('loadTime').textContent = '数据更新于 ' + fmtTs(Date.now());
+  btn.classList.remove('busy');
+}
+
+// 启动
+refreshAll();
+</script>
+</body>
+</html>
