@@ -1,0 +1,45 @@
+﻿# ===== Secrets =====
+**/.env
+**/.env.*
+!**/.env.example
+
+# ===== Dependencies =====
+**/node_modules/
+
+# ===== Build / Cache =====
+**/dist/
+**/build/
+**/.next/
+**/.cache/
+**/__pycache__/
+**/.venv/
+**/venv/
+
+# ===== Logs / OS / IDE =====
+**/*.log
+**/.DS_Store
+**/Thumbs.db
+**/.vscode/
+**/.idea/
+
+# ===== Separate Git repository =====
+/水獭星球交付代码/
+
+# ===== Huge raw 3D assets =====
+/02.场景资产/new-小溪/场地模型+小溪.blend
+/02.场景资产/new-小溪/场地模型+小溪.blend1
+/02.场景资产/New/scene-new.glb
+/02.场景资产/new3/Untitl_30592_autosave.blend
+/02.场景资产/new3/Untitl_30592_autosave.blend1
+/02.场景资产/new-小溪/Untitl_30592_autosave_26584_autosave.blend1
+/02.场景资产/new-小溪/场地模型+小溪v2.blend
+/02.场景资产/new-小溪/场地模型+小溪v2.blend1
+/02.场景资产/new-小溪/新建文件夹/场地模型+小溪v2/场地模型+小溪v2.glb
+/02.场景资产/New/Untitl.blend
+/02.场景资产/New/Untitl.zip
+/02.场景资产/new-小溪/新建文件夹/场地模型+小溪v2.zip
+/02.场景资产/new3/scene-terrain.glb
+
+# macOS archive metadata
+**/__MACOSX/
+**/._*

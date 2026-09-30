@@ -1,0 +1,82 @@
+import os
+import re
+from typing import Literal
+
+import httpx
+from fastapi import APIRouter, HTTPException, Response
+from pydantic import BaseModel, Field
+
+router = APIRouter()
+
+FISH_TTS_URL = 'https://api.fish.audio/v1/tts'
+FISH_TTS_MODEL = os.getenv('FISH_AUDIO_MODEL', 's2-pro')
+FISH_TIMEOUT_MS = 90000
+
+FishVoiceRole = Literal['woodpecker', 'kiwi', 'jiligulu']
+
+FISH_VOICE_IDS: dict[str, str] = {
+    'woodpecker': '35a9636116db44d6a5310afbf150422a',
+    'kiwi': '826150b4861b40d982896940f55095be',
+    'jiligulu': '737db7322d494e85a27bd73fad9d493b',
+}
+
+MARKER_RE = re.compile(r'\[(?:COMPLETE|NAME:[^\]]*)\]')
+
+
+class FishTtsRequest(BaseModel):
+    role: FishVoiceRole = Field(description='NPC voice role')
+    text: str = Field(min_length=1, max_length=1000, description='Text to synthesize')
+
+
+def sanitize_tts_text(text: str) -> str:
+    text = MARKER_RE.sub('', text)
+    text = re.sub(r'\s+', ' ', text)
+    return text.strip()[:500]
+
+
+def voice_id_for_role(role: FishVoiceRole) -> str:
+    return FISH_VOICE_IDS[role]
+
+
+async def create_fish_speech(role: FishVoiceRole, text: str, api_key: str) -> tuple[bytes, str]:
+    clean_text = sanitize_tts_text(text)
+    if not clean_text:
+        raise HTTPException(status_code=400, detail='text is required')
+
+    headers = {
+        'Authorization': f'Bearer {api_key}',
+        'Content-Type': 'application/json',
+        'model': FISH_TTS_MODEL,
+    }
+    payload = {
+        'text': clean_text,
+        'reference_id': voice_id_for_role(role),
+        'format': 'mp3',
+        'normalize': True,
+    }
+    timeout = httpx.Timeout(connect=30.0, read=FISH_TIMEOUT_MS / 1000, write=30.0, pool=30.0)
+
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        upstream = await client.post(FISH_TTS_URL, headers=headers, json=payload)
+
+    if upstream.status_code >= 400:
+        raise HTTPException(status_code=upstream.status_code, detail=upstream.text[:500])
+
+    content_type = upstream.headers.get('content-type') or 'audio/mpeg'
+    return upstream.content, content_type
+
+
+@router.post('')
+async def fish_tts(request: FishTtsRequest):
+    api_key = os.getenv('FISH_AUDIO_API_KEY')
+    if not api_key:
+        raise HTTPException(status_code=500, detail='FISH_AUDIO_API_KEY not configured')
+
+    try:
+        audio, content_type = await create_fish_speech(request.role, request.text, api_key)
+        return Response(content=audio, media_type=content_type, headers={'Cache-Control': 'no-store'})
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f'Fish TTS error: {e}')
+        raise HTTPException(status_code=500, detail=str(e) or 'Fish Audio TTS failed')
